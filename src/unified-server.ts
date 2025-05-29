@@ -8,10 +8,16 @@ import {
   ErrorCode,
   ListToolsRequestSchema,
   McpError,
+  JSONRPCMessage,
+  JSONRPCRequest,
+  JSONRPCResponse,
 } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { OpenRouterClient } from "./services/OpenRouterClient.js";
 import dotenv from 'dotenv';
+import WebSocket, { WebSocketServer } from 'ws';
+import { createServer } from 'http';
+import { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 
 dotenv.config();
 
@@ -62,6 +68,63 @@ async function enhancePrompt(args: z.infer<typeof EnhancePromptSchema>): Promise
   }
 
   return await openRouterClient.enhancePrompt(args.prompt, fullContext);
+}
+
+// Custom WebSocket transport for MCP
+class WebSocketMCPTransport implements Transport {
+  private ws: WebSocket;
+  private onMessageCallback?: (message: JSONRPCMessage) => void;
+  private onCloseCallback?: () => void;
+  private onErrorCallback?: (error: Error) => void;
+
+  constructor(ws: WebSocket) {
+    this.ws = ws;
+    
+    this.ws.on('message', (data) => {
+      try {
+        const message = JSON.parse(data.toString());
+        this.onMessageCallback?.(message);
+      } catch (error) {
+        console.error('Failed to parse WebSocket message:', error);
+      }
+    });
+
+    this.ws.on('close', () => {
+      this.onCloseCallback?.();
+    });
+
+    this.ws.on('error', (error) => {
+      this.onErrorCallback?.(error);
+    });
+  }
+
+  async start(): Promise<void> {
+    // WebSocket is already connected
+  }
+
+  async send(message: JSONRPCMessage): Promise<void> {
+    if (this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify(message));
+    } else {
+      throw new Error('WebSocket is not open');
+    }
+  }
+
+  async close(): Promise<void> {
+    this.ws.close();
+  }
+
+  onMessage(callback: (message: JSONRPCMessage) => void): void {
+    this.onMessageCallback = callback;
+  }
+
+  onClose(callback: () => void): void {
+    this.onCloseCallback = callback;
+  }
+
+  onError(callback: (error: Error) => void): void {
+    this.onErrorCallback = callback;
+  }
 }
 
 // MCP Mode (Local or Remote)
@@ -174,13 +237,14 @@ if (IS_MCP_MODE || IS_REMOTE_MCP) {
 
     async run(): Promise<void> {
       if (IS_REMOTE_MCP) {
-        // Setup SSE transport for Claude.ai
-        this.setupSSETransport();
+        // Setup WebSocket transport for Claude.ai
+        const httpServer = createServer(app);
+        this.setupWebSocketTransport(httpServer);
         
-        app.listen(PORT, () => {
+        httpServer.listen(PORT, () => {
           console.log(`Perfect Prompt MCP Server running on port ${PORT}`);
-          console.log(`SSE endpoint: http://localhost:${PORT}/sse`);
-          console.log(`Messages endpoint: http://localhost:${PORT}/messages`);
+          console.log(`WebSocket endpoint: ws://localhost:${PORT}/mcp`);
+          console.log(`Health check: http://localhost:${PORT}/health`);
         });
       } else {
         // Local MCP with stdio transport
@@ -188,6 +252,50 @@ if (IS_MCP_MODE || IS_REMOTE_MCP) {
         await this.server.connect(transport);
         console.error("Perfect Prompt MCP Server running on stdio");
       }
+    }
+
+    private setupWebSocketTransport(httpServer: any): void {
+      const wss = new WebSocketServer({ 
+        server: httpServer,
+        path: '/mcp'
+      });
+
+      wss.on('connection', (ws) => {
+        console.log('New WebSocket connection established');
+        
+        // Create a custom transport for this WebSocket connection
+        const transport = new WebSocketMCPTransport(ws);
+        
+        // Connect the MCP server to this transport
+        this.server.connect(transport).catch(console.error);
+        
+        ws.on('close', () => {
+          console.log('WebSocket connection closed');
+        });
+
+        ws.on('error', (error) => {
+          console.error('WebSocket error:', error);
+        });
+      });
+
+      // Health check endpoint
+      app.get('/health', (req, res) => {
+        res.json({ 
+          status: 'ok',
+          mode: 'remote-mcp-websocket',
+          uptime: process.uptime()
+        });
+      });
+
+      app.get('/', (req, res) => {
+        res.json({
+          name: "perfect-prompt-mcp",
+          vendor: "PerfectPrompt",
+          version: "1.0.0",
+          transport: "websocket",
+          endpoint: "/mcp"
+        });
+      });
     }
 
     private setupSSETransport(): void {
