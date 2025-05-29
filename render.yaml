@@ -1,9 +1,9 @@
 services:
   - type: web
-    name: perfect-prompt-sse
+    name: perfect-prompt-mcp
     runtime: node
     buildCommand: npm install && npm run build
-    startCommand: npm run start:sse
+    startCommand: npm run start:remote-mcp
     envVars:
       - key: NODE_ENV
         value: production
