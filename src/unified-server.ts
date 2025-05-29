@@ -2,6 +2,7 @@
 import express from 'express';
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import {
   CallToolRequestSchema,
   ErrorCode,
@@ -17,6 +18,7 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 3000;
 const IS_MCP_MODE = process.argv.includes('--mcp');
+const IS_REMOTE_MCP = process.argv.includes('--remote-mcp');
 
 app.use(express.json());
 
@@ -51,8 +53,8 @@ async function enhancePrompt(args: z.infer<typeof EnhancePromptSchema>): Promise
   return await openRouterClient.enhancePrompt(args.prompt, fullContext);
 }
 
-// MCP Mode
-if (IS_MCP_MODE) {
+// MCP Mode (Local or Remote)
+if (IS_MCP_MODE || IS_REMOTE_MCP) {
   class PerfectPromptMCPServer {
     private server: Server;
 
@@ -160,9 +162,102 @@ if (IS_MCP_MODE) {
     }
 
     async run(): Promise<void> {
-      const transport = new StdioServerTransport();
-      await this.server.connect(transport);
-      console.error("Perfect Prompt MCP Server running on stdio");
+      if (IS_REMOTE_MCP) {
+        // Remote MCP with HTTP endpoints
+        this.setupHttpEndpoints();
+        
+        app.listen(PORT, () => {
+          console.log(`Perfect Prompt MCP Server running on port ${PORT} with HTTP transport`);
+          console.log(`MCP endpoint: http://localhost:${PORT}/mcp`);
+        });
+      } else {
+        // Local MCP with stdio transport
+        const transport = new StdioServerTransport();
+        await this.server.connect(transport);
+        console.error("Perfect Prompt MCP Server running on stdio");
+      }
+    }
+
+    private setupHttpEndpoints(): void {
+      // MCP tools endpoint
+      app.get('/mcp/tools', (req, res) => {
+        res.json({
+          tools: [
+            {
+              name: "enhance_prompt",
+              description: "Enhance a prompt to be clearer, more specific, and more effective using AI",
+              inputSchema: {
+                type: "object",
+                properties: {
+                  prompt: {
+                    type: "string",
+                    description: "The prompt text to enhance",
+                  },
+                  context: {
+                    type: "string",
+                    description: "Optional conversation or code context",
+                  },
+                  messages: {
+                    type: "array",
+                    description: "Recent conversation messages",
+                    items: {
+                      type: "object",
+                      properties: {
+                        role: { type: "string", enum: ["user", "assistant"] },
+                        content: { type: "string" }
+                      },
+                      required: ["role", "content"]
+                    }
+                  },
+                  model: {
+                    type: "string",
+                    description: "AI model to use (default: google/gemini-2.5-flash-preview-05-20)",
+                    enum: [
+                      "google/gemini-2.5-flash-preview-05-20",
+                      "deepseek/deepseek-chat-v3-0324:free",
+                      "anthropic/claude-3-haiku",
+                      "openai/gpt-4o-mini",
+                    ],
+                  },
+                },
+                required: ["prompt"],
+              },
+            },
+          ],
+        });
+      });
+
+      // MCP call tool endpoint
+      app.post('/mcp/call', async (req, res) => {
+        try {
+          const { name, arguments: args } = req.body;
+          
+          if (name === "enhance_prompt") {
+            const result = await this.handleEnhancePrompt(args);
+            res.json(result);
+          } else {
+            res.status(404).json({ error: `Unknown tool: ${name}` });
+          }
+        } catch (error) {
+          res.status(500).json({ 
+            error: error instanceof Error ? error.message : 'Unknown error' 
+          });
+        }
+      });
+
+      // MCP server info endpoint
+      app.get('/mcp', (req, res) => {
+        res.json({
+          name: "perfect-prompt-mcp",
+          vendor: "PerfectPrompt",
+          version: "1.0.0",
+          description: "AI-powered prompt enhancement via MCP",
+          endpoints: {
+            tools: "/mcp/tools",
+            call: "/mcp/call"
+          }
+        });
+      });
     }
   }
 

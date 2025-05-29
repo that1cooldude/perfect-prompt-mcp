@@ -18,7 +18,7 @@ Your code is now pushed to GitHub at: https://github.com/that1cooldude/perfect-p
    - **Branch**: `master`
    - **Runtime**: `Node`
    - **Build Command**: `npm install && npm run build`
-   - **Start Command**: `npm run start:sse`
+   - **Start Command**: `npm run start:remote-mcp`
 
 6. Click "Advanced" and add environment variable:
    - **Key**: `OPENROUTER_API_KEY`
@@ -30,15 +30,17 @@ Your code is now pushed to GitHub at: https://github.com/that1cooldude/perfect-p
 
 ## After Deployment
 
-Your SSE server will be available at:
+Your remote MCP server will be available at:
 ```
 https://perfect-prompt-sse.onrender.com
 ```
 
-### Endpoints:
-- `GET /sse` - Server-Sent Events stream
-- `POST /enhance` - Enhance prompts
-- `GET /health` - Health check
+### MCP Endpoint:
+- `GET /mcp` - MCP Server-Sent Events transport for Claude.ai integration
+
+### Additional Endpoints:
+- `GET /health` - Health check  
+- `POST /enhance` - Direct enhance API (for web integrations)
 
 ### Example Usage:
 ```bash
@@ -52,6 +54,16 @@ curl -X POST https://perfect-prompt-sse.onrender.com/enhance \
     ]
   }'
 ```
+
+## Adding to Claude.ai
+
+Once deployed, add your MCP server to Claude.ai:
+
+1. **Requirements**: Claude Max, Team, or Enterprise plan
+2. **Go to**: Claude.ai → Settings → Integrations  
+3. **Click**: "Add custom integration"
+4. **Enter URL**: `https://your-render-app.onrender.com/mcp`
+5. **Click**: "Add"
 
 ### Note:
 Free tier services spin down after 15 minutes of inactivity. First request after spin-down takes ~30 seconds.

@@ -10,6 +10,7 @@
     "build": "tsc",
     "start": "node dist/unified-server.js",
     "start:mcp": "node dist/unified-server.js --mcp",
+    "start:remote-mcp": "node dist/unified-server.js --remote-mcp",
     "test": "jest",
     "lint": "eslint src/**/*.ts",
     "typecheck": "tsc --noEmit"
