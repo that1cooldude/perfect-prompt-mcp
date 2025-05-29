@@ -174,12 +174,13 @@ if (IS_MCP_MODE || IS_REMOTE_MCP) {
 
     async run(): Promise<void> {
       if (IS_REMOTE_MCP) {
-        // Remote MCP with HTTP endpoints
-        this.setupHttpEndpoints();
+        // Setup SSE transport for Claude.ai
+        this.setupSSETransport();
         
         app.listen(PORT, () => {
-          console.log(`Perfect Prompt MCP Server running on port ${PORT} with HTTP transport`);
-          console.log(`MCP endpoint: http://localhost:${PORT}/mcp`);
+          console.log(`Perfect Prompt MCP Server running on port ${PORT}`);
+          console.log(`SSE endpoint: http://localhost:${PORT}/sse`);
+          console.log(`Messages endpoint: http://localhost:${PORT}/messages`);
         });
       } else {
         // Local MCP with stdio transport
@@ -187,6 +188,86 @@ if (IS_MCP_MODE || IS_REMOTE_MCP) {
         await this.server.connect(transport);
         console.error("Perfect Prompt MCP Server running on stdio");
       }
+    }
+
+    private setupSSETransport(): void {
+      // Store transports by session ID
+      const transports = new Map<string, SSEServerTransport>();
+
+      // SSE endpoint - Claude.ai connects here first
+      app.get('/sse', async (req, res) => {
+        try {
+          const transport = new SSEServerTransport('/messages', res);
+          const sessionId = (transport as any).sessionId || Date.now().toString();
+          
+          transports.set(sessionId, transport);
+          
+          // Clean up on disconnect
+          res.on('close', () => {
+            transports.delete(sessionId);
+          });
+
+          // Connect the MCP server to this transport
+          await this.server.connect(transport);
+          
+          console.log(`New SSE connection established: ${sessionId}`);
+        } catch (error) {
+          console.error('SSE connection error:', error);
+          res.status(500).json({ error: 'Failed to establish SSE connection' });
+        }
+      });
+
+      // Messages endpoint - Claude.ai sends requests here
+      app.post('/messages', async (req, res) => {
+        try {
+          const sessionId = req.query.sessionId as string;
+          const transport = transports.get(sessionId);
+          
+          if (!transport) {
+            return res.status(400).json({ error: 'No transport found for sessionId' });
+          }
+
+          // Forward the message to the transport
+          await transport.handlePostMessage(req, res);
+        } catch (error) {
+          console.error('Message handling error:', error);
+          res.status(500).json({ error: 'Failed to handle message' });
+        }
+      });
+
+      // Health check
+      app.get('/health', (req, res) => {
+        res.json({ 
+          status: 'ok', 
+          connections: transports.size,
+          mode: 'remote-mcp-sse'
+        });
+      });
+    }
+
+    private setupAdditionalEndpoints(): void {
+      // Health check endpoint
+      app.get('/health', (req, res) => {
+        res.json({ 
+          status: 'ok', 
+          mode: 'remote-mcp-sse',
+          uptime: process.uptime()
+        });
+      });
+
+      // MCP info endpoint for debugging
+      app.get('/info', (req, res) => {
+        res.json({
+          name: "perfect-prompt-mcp",
+          vendor: "PerfectPrompt", 
+          version: "1.0.0",
+          transport: "sse",
+          endpoints: {
+            sse: "/sse",
+            message: "/message"
+          }
+        });
+      });
     }
 
     private setupHttpEndpoints(): void {
