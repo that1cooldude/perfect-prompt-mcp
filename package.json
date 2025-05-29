@@ -5,10 +5,11 @@
   "main": "dist/index.js",
   "type": "module",
   "scripts": {
-    "dev": "tsx watch src/index.ts",
-    "dev:sse": "tsx watch src/sse-server.ts",
+    "dev": "tsx watch src/unified-server.ts --mcp",
+    "dev:web": "tsx watch src/unified-server.ts",
     "build": "tsc",
-    "start:sse": "node dist/sse-server.js",
+    "start": "node dist/unified-server.js",
+    "start:mcp": "node dist/unified-server.js --mcp",
     "test": "jest",
     "lint": "eslint src/**/*.ts",
     "typecheck": "tsc --noEmit"

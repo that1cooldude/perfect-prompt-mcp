@@ -20,4 +20,4 @@ COPY --from=builder /app/src ./src
 
 EXPOSE 3000
 
-CMD ["node", "dist/sse-server.js"]
+CMD ["node", "dist/unified-server.js"]
