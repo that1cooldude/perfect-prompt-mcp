@@ -22,6 +22,17 @@ const IS_REMOTE_MCP = process.argv.includes('--remote-mcp');
 
 app.use(express.json());
 
+// CORS headers for Claude.ai integration
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
+  next();
+});
+
 // Shared enhancement logic
 const EnhancePromptSchema = z.object({
   prompt: z.string().describe("The prompt text to enhance"),
@@ -179,8 +190,30 @@ if (IS_MCP_MODE || IS_REMOTE_MCP) {
     }
 
     private setupHttpEndpoints(): void {
+      // OAuth authorization endpoint
+      app.get('/mcp/authorize', (req, res) => {
+        // Simple token-based auth for demo - in production use proper OAuth
+        const token = Math.random().toString(36).substring(2);
+        res.json({
+          access_token: token,
+          token_type: 'Bearer',
+          expires_in: 3600,
+          scope: 'enhance_prompt'
+        });
+      });
+
+      // Token validation middleware
+      const validateToken = (req: express.Request, res: express.Response, next: express.NextFunction) => {
+        const authHeader = req.headers.authorization;
+        if (!authHeader || !authHeader.startsWith('Bearer ')) {
+          // For now, allow unauthenticated access but log it
+          console.log('No auth token provided, allowing access');
+        }
+        next();
+      };
+
       // MCP tools endpoint
-      app.get('/mcp/tools', (req, res) => {
+      app.get('/mcp/tools', validateToken, (req, res) => {
         res.json({
           tools: [
             {
@@ -228,7 +261,7 @@ if (IS_MCP_MODE || IS_REMOTE_MCP) {
       });
 
       // MCP call tool endpoint
-      app.post('/mcp/call', async (req, res) => {
+      app.post('/mcp/call', validateToken, async (req, res) => {
         try {
           const { name, arguments: args } = req.body;
           
@@ -252,9 +285,15 @@ if (IS_MCP_MODE || IS_REMOTE_MCP) {
           vendor: "PerfectPrompt",
           version: "1.0.0",
           description: "AI-powered prompt enhancement via MCP",
+          authentication: {
+            type: "oauth2",
+            authorization_url: "/mcp/authorize",
+            token_url: "/mcp/authorize"
+          },
           endpoints: {
             tools: "/mcp/tools",
-            call: "/mcp/call"
+            call: "/mcp/call",
+            authorize: "/mcp/authorize"
           }
         });
       });
