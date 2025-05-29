@@ -2,22 +2,16 @@
 import express from 'express';
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import {
   CallToolRequestSchema,
   ErrorCode,
   ListToolsRequestSchema,
   McpError,
-  JSONRPCMessage,
-  JSONRPCRequest,
-  JSONRPCResponse,
 } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { OpenRouterClient } from "./services/OpenRouterClient.js";
 import dotenv from 'dotenv';
-import WebSocket, { WebSocketServer } from 'ws';
-import { createServer } from 'http';
-import { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 
 dotenv.config();
 
@@ -68,63 +62,6 @@ async function enhancePrompt(args: z.infer<typeof EnhancePromptSchema>): Promise
   }
 
   return await openRouterClient.enhancePrompt(args.prompt, fullContext);
-}
-
-// Custom WebSocket transport for MCP
-class WebSocketMCPTransport implements Transport {
-  private ws: WebSocket;
-  private onMessageCallback?: (message: JSONRPCMessage) => void;
-  private onCloseCallback?: () => void;
-  private onErrorCallback?: (error: Error) => void;
-
-  constructor(ws: WebSocket) {
-    this.ws = ws;
-    
-    this.ws.on('message', (data) => {
-      try {
-        const message = JSON.parse(data.toString());
-        this.onMessageCallback?.(message);
-      } catch (error) {
-        console.error('Failed to parse WebSocket message:', error);
-      }
-    });
-
-    this.ws.on('close', () => {
-      this.onCloseCallback?.();
-    });
-
-    this.ws.on('error', (error) => {
-      this.onErrorCallback?.(error);
-    });
-  }
-
-  async start(): Promise<void> {
-    // WebSocket is already connected
-  }
-
-  async send(message: JSONRPCMessage): Promise<void> {
-    if (this.ws.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify(message));
-    } else {
-      throw new Error('WebSocket is not open');
-    }
-  }
-
-  async close(): Promise<void> {
-    this.ws.close();
-  }
-
-  onMessage(callback: (message: JSONRPCMessage) => void): void {
-    this.onMessageCallback = callback;
-  }
-
-  onClose(callback: () => void): void {
-    this.onCloseCallback = callback;
-  }
-
-  onError(callback: (error: Error) => void): void {
-    this.onErrorCallback = callback;
-  }
 }
 
 // MCP Mode (Local or Remote)
@@ -237,12 +174,12 @@ if (IS_MCP_MODE || IS_REMOTE_MCP) {
 
     async run(): Promise<void> {
       if (IS_REMOTE_MCP) {
-        // Setup SSE transport for Claude.ai (correct protocol)
-        this.setupSSETransport();
+        // Create a standalone remote MCP server
+        this.setupRemoteMCPEndpoints();
         
         app.listen(PORT, () => {
           console.log(`Perfect Prompt MCP Server running on port ${PORT}`);
-          console.log(`SSE endpoint (for Claude.ai): http://localhost:${PORT}/sse`);
+          console.log(`Remote MCP endpoint: http://localhost:${PORT}/sse`);
           console.log(`Health check: http://localhost:${PORT}/health`);
         });
       } else {
@@ -253,269 +190,121 @@ if (IS_MCP_MODE || IS_REMOTE_MCP) {
       }
     }
 
-    private setupWebSocketTransport(httpServer: any): void {
-      const wss = new WebSocketServer({ 
-        server: httpServer,
-        path: '/mcp'
-      });
-
-      wss.on('connection', (ws) => {
-        console.log('New WebSocket connection established');
-        
-        // Create a custom transport for this WebSocket connection
-        const transport = new WebSocketMCPTransport(ws);
-        
-        // Connect the MCP server to this transport
-        this.server.connect(transport).catch(console.error);
-        
-        ws.on('close', () => {
-          console.log('WebSocket connection closed');
-        });
-
-        ws.on('error', (error) => {
-          console.error('WebSocket error:', error);
-        });
-      });
-
-      // Health check endpoint
-      app.get('/health', (req, res) => {
-        res.json({ 
-          status: 'ok',
-          mode: 'remote-mcp-websocket',
-          uptime: process.uptime()
-        });
-      });
-
-      app.get('/', (req, res) => {
-        res.json({
-          name: "perfect-prompt-mcp",
-          vendor: "PerfectPrompt",
-          version: "1.0.0",
-          transport: "websocket",
-          endpoint: "/mcp"
-        });
-      });
-    }
-
-    private setupSSETransport(): void {
-      // Store transports by session ID  
-      const transports = new Map<string, SSEServerTransport>();
-
-      // SSE endpoint - Claude.ai connects here for remote MCP
-      app.get('/sse', async (req, res) => {
-        try {
-          console.log('New SSE connection request from Claude.ai');
-          
-          // Create SSE transport with proper endpoint
-          const transport = new SSEServerTransport('/messages', res);
-          const sessionId = (transport as any).sessionId || `session_${Date.now()}`;
-          
-          transports.set(sessionId, transport);
-          
-          // Clean up on disconnect
-          res.on('close', () => {
-            console.log(`SSE connection closed: ${sessionId}`);
-            transports.delete(sessionId);
-          });
-
-          res.on('error', (error) => {
-            console.error(`SSE connection error: ${sessionId}`, error);
-            transports.delete(sessionId);
-          });
-
-          // Connect the MCP server to this transport
-          await this.server.connect(transport);
-          
-          console.log(`SSE connection established: ${sessionId}`);
-        } catch (error) {
-          console.error('Failed to establish SSE connection:', error);
-          if (!res.headersSent) {
-            res.status(500).json({ error: 'Failed to establish SSE connection' });
-          }
-        }
-      });
-
-      // Messages endpoint - Claude.ai sends MCP requests here
-      app.post('/messages', async (req, res) => {
-        try {
-          const sessionId = req.query.sessionId as string;
-          const transport = transports.get(sessionId);
-          
-          if (!transport) {
-            console.error(`No transport found for sessionId: ${sessionId}`);
-            return res.status(400).json({ error: 'No transport found for sessionId' });
-          }
-
-          console.log(`Handling message for session: ${sessionId}`);
-          
-          // Forward the message to the transport
-          await transport.handlePostMessage(req, res);
-        } catch (error) {
-          console.error('Message handling error:', error);
-          if (!res.headersSent) {
-            res.status(500).json({ error: 'Failed to handle message' });
-          }
-        }
-      });
-
+    private setupRemoteMCPEndpoints(): void {
       // Health check
       app.get('/health', (req, res) => {
         res.json({ 
-          status: 'ok', 
-          connections: transports.size,
-          mode: 'remote-mcp-sse',
-          uptime: process.uptime()
+          status: 'ok',
+          mode: 'standalone-remote-mcp',
+          uptime: process.uptime(),
+          endpoint: '/sse'
         });
       });
 
-      // Root endpoint for Claude.ai integration info
+      // Server info for mcp-remote and Claude.ai
       app.get('/', (req, res) => {
         res.json({
           name: "perfect-prompt-mcp",
           vendor: "PerfectPrompt",
           version: "1.0.0",
           description: "AI-powered prompt enhancement via MCP",
-          transport: "sse",
+          transport: "standalone",
           endpoint: "/sse",
-          integration_url: `${req.protocol}://${req.get('host')}/sse`
-        });
-      });
-    }
-
-    private setupAdditionalEndpoints(): void {
-      // Health check endpoint
-      app.get('/health', (req, res) => {
-        res.json({ 
-          status: 'ok', 
-          mode: 'remote-mcp-sse',
-          uptime: process.uptime()
+          tools: ["enhance_prompt"]
         });
       });
 
-      // MCP info endpoint for debugging
-      app.get('/info', (req, res) => {
-        res.json({
-          name: "perfect-prompt-mcp",
-          vendor: "PerfectPrompt", 
-          version: "1.0.0",
-          transport: "sse",
-          endpoints: {
-            sse: "/sse",
-            message: "/message"
-          }
+      // SSE endpoint for mcp-remote compatibility
+      app.get('/sse', (req, res) => {
+        res.writeHead(200, {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache',
+          'Connection': 'keep-alive',
+          'Access-Control-Allow-Origin': '*',
+          'Access-Control-Allow-Headers': 'Content-Type'
         });
-      });
-    }
 
-    private setupHttpEndpoints(): void {
-      // OAuth authorization endpoint
-      app.get('/mcp/authorize', (req, res) => {
-        // Simple token-based auth for demo - in production use proper OAuth
-        const token = Math.random().toString(36).substring(2);
-        res.json({
-          access_token: token,
-          token_type: 'Bearer',
-          expires_in: 3600,
-          scope: 'enhance_prompt'
+        // Send initial handshake
+        res.write('data: {"jsonrpc":"2.0","method":"notifications/initialized"}\n\n');
+        
+        // Keep connection alive
+        const keepAlive = setInterval(() => {
+          res.write('data: {"jsonrpc":"2.0","method":"notifications/ping"}\n\n');
+        }, 30000);
+
+        req.on('close', () => {
+          clearInterval(keepAlive);
         });
       });
 
-      // Token validation middleware
-      const validateToken = (req: express.Request, res: express.Response, next: express.NextFunction) => {
-        const authHeader = req.headers.authorization;
-        if (!authHeader || !authHeader.startsWith('Bearer ')) {
-          // For now, allow unauthenticated access but log it
-          console.log('No auth token provided, allowing access');
-        }
-        next();
-      };
+      // Handle MCP requests
+      app.post('/messages', async (req, res) => {
+        try {
+          const message = req.body;
+          console.log('Received MCP message:', JSON.stringify(message, null, 2));
 
-      // MCP tools endpoint
-      app.get('/mcp/tools', validateToken, (req, res) => {
-        res.json({
-          tools: [
-            {
-              name: "enhance_prompt",
-              description: "Enhance a prompt to be clearer, more specific, and more effective using AI",
-              inputSchema: {
-                type: "object",
-                properties: {
-                  prompt: {
-                    type: "string",
-                    description: "The prompt text to enhance",
-                  },
-                  context: {
-                    type: "string",
-                    description: "Optional conversation or code context",
-                  },
-                  messages: {
-                    type: "array",
-                    description: "Recent conversation messages",
-                    items: {
+          if (message.method === 'tools/list') {
+            res.json({
+              jsonrpc: "2.0",
+              id: message.id,
+              result: {
+                tools: [
+                  {
+                    name: "enhance_prompt",
+                    description: "Enhance a prompt to be clearer, more specific, and more effective using AI",
+                    inputSchema: {
                       type: "object",
                       properties: {
-                        role: { type: "string", enum: ["user", "assistant"] },
-                        content: { type: "string" }
+                        prompt: {
+                          type: "string",
+                          description: "The prompt text to enhance",
+                        },
+                        context: {
+                          type: "string",
+                          description: "Optional conversation or code context",
+                        },
+                        model: {
+                          type: "string",
+                          description: "AI model to use (default: google/gemini-2.5-flash-preview-05-20)",
+                        },
                       },
-                      required: ["role", "content"]
-                    }
+                      required: ["prompt"],
+                    },
                   },
-                  model: {
-                    type: "string",
-                    description: "AI model to use (default: google/gemini-2.5-flash-preview-05-20)",
-                    enum: [
-                      "google/gemini-2.5-flash-preview-05-20",
-                      "deepseek/deepseek-chat-v3-0324:free",
-                      "anthropic/claude-3-haiku",
-                      "openai/gpt-4o-mini",
-                    ],
-                  },
-                },
-                required: ["prompt"],
-              },
-            },
-          ],
-        });
-      });
-
-      // MCP call tool endpoint
-      app.post('/mcp/call', validateToken, async (req, res) => {
-        try {
-          const { name, arguments: args } = req.body;
-          
-          if (name === "enhance_prompt") {
-            const result = await this.handleEnhancePrompt(args);
-            res.json(result);
+                ],
+              }
+            });
+          } else if (message.method === 'tools/call' && message.params?.name === 'enhance_prompt') {
+            const result = await this.handleEnhancePrompt(message.params.arguments);
+            res.json({
+              jsonrpc: "2.0",
+              id: message.id,
+              result
+            });
           } else {
-            res.status(404).json({ error: `Unknown tool: ${name}` });
+            res.json({
+              jsonrpc: "2.0",
+              id: message.id,
+              error: {
+                code: -32601,
+                message: "Method not found"
+              }
+            });
           }
         } catch (error) {
-          res.status(500).json({ 
-            error: error instanceof Error ? error.message : 'Unknown error' 
+          console.error('Error handling MCP message:', error);
+          res.json({
+            jsonrpc: "2.0",
+            id: req.body.id,
+            error: {
+              code: -32603,
+              message: error instanceof Error ? error.message : 'Internal error'
+            }
           });
         }
       });
-
-      // MCP server info endpoint
-      app.get('/mcp', (req, res) => {
-        res.json({
-          name: "perfect-prompt-mcp",
-          vendor: "PerfectPrompt",
-          version: "1.0.0",
-          description: "AI-powered prompt enhancement via MCP",
-          authentication: {
-            type: "oauth2",
-            authorization_url: "/mcp/authorize",
-            token_url: "/mcp/authorize"
-          },
-          endpoints: {
-            tools: "/mcp/tools",
-            call: "/mcp/call",
-            authorize: "/mcp/authorize"
-          }
-        });
-      });
     }
+
   }
 
   const server = new PerfectPromptMCPServer();
