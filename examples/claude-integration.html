@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Perfect Prompt SSE Integration</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 800px;
+            margin: 40px auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            margin-bottom: 20px;
+        }
+        .status {
+            padding: 10px;
+            margin-bottom: 20px;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+        .connected {
+            background: #e7f5e7;
+            color: #2e7d2e;
+        }
+        .disconnected {
+            background: #ffe4e4;
+            color: #d73636;
+        }
+        .enhancement-form {
+            margin-bottom: 30px;
+        }
+        textarea {
+            width: 100%;
+            padding: 12px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 16px;
+            resize: vertical;
+            min-height: 100px;
+        }
+        button {
+            background: #007bff;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 4px;
+            font-size: 16px;
+            cursor: pointer;
+            margin-top: 10px;
+        }
+        button:hover {
+            background: #0056b3;
+        }
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+        .events {
+            max-height: 400px;
+            overflow-y: auto;
+            border: 1px solid #eee;
+            border-radius: 4px;
+            padding: 10px;
+            background: #fafafa;
+        }
+        .event {
+            padding: 8px;
+            margin-bottom: 5px;
+            border-left: 3px solid #007bff;
+            background: white;
+            font-family: monospace;
+            font-size: 14px;
+        }
+        .error {
+            border-left-color: #d73636;
+        }
+        .success {
+            border-left-color: #2e7d2e;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Perfect Prompt SSE Integration</h1>
+        
+        <div id="status" class="status disconnected">
+            Disconnected from SSE server
+        </div>
+
+        <div class="enhancement-form">
+            <h2>Test Prompt Enhancement</h2>
+            <textarea id="prompt" placeholder="Enter your prompt here...">Explain quantum computing</textarea>
+            <br>
+            <button id="enhanceBtn" onclick="enhancePrompt()">Enhance Prompt</button>
+        </div>
+
+        <h2>Event Stream</h2>
+        <div id="events" class="events">
+            <div class="event">Waiting for connection...</div>
+        </div>
+    </div>
+
+    <script>
+        // Replace with your deployed server URL
+        const SSE_URL = 'http://localhost:3000';
+        let eventSource;
+
+        function connectSSE() {
+            eventSource = new EventSource(`${SSE_URL}/sse`);
+
+            eventSource.onopen = () => {
+                updateStatus('Connected to SSE server', true);
+                addEvent('Connection established', 'success');
+            };
+
+            eventSource.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                handleSSEMessage(data);
+            };
+
+            eventSource.onerror = (error) => {
+                updateStatus('Disconnected from SSE server', false);
+                addEvent('Connection error', 'error');
+            };
+        }
+
+        function handleSSEMessage(data) {
+            switch(data.type) {
+                case 'connected':
+                    addEvent(`Connected with client ID: ${data.clientId}`, 'success');
+                    break;
+                case 'enhancement_started':
+                    addEvent(`Enhancement started for: "${data.prompt}"`, 'info');
+                    break;
+                case 'enhancement_completed':
+                    addEvent(`Enhancement completed:\nOriginal: "${data.original}"\nEnhanced: "${data.enhanced}"`, 'success');
+                    break;
+                case 'error':
+                    addEvent(`Error: ${data.error}`, 'error');
+                    break;
+                default:
+                    addEvent(`Unknown event: ${JSON.stringify(data)}`, 'info');
+            }
+        }
+
+        function updateStatus(message, connected) {
+            const statusEl = document.getElementById('status');
+            statusEl.textContent = message;
+            statusEl.className = `status ${connected ? 'connected' : 'disconnected'}`;
+        }
+
+        function addEvent(message, type = 'info') {
+            const eventsEl = document.getElementById('events');
+            const eventEl = document.createElement('div');
+            eventEl.className = `event ${type}`;
+            eventEl.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+            eventsEl.appendChild(eventEl);
+            eventsEl.scrollTop = eventsEl.scrollHeight;
+        }
+
+        async function enhancePrompt() {
+            const prompt = document.getElementById('prompt').value;
+            const button = document.getElementById('enhanceBtn');
+            
+            if (!prompt.trim()) {
+                alert('Please enter a prompt');
+                return;
+            }
+
+            button.disabled = true;
+            
+            try {
+                const response = await fetch(`${SSE_URL}/enhance`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ prompt }),
+                });
+
+                const result = await response.json();
+                
+                if (result.success) {
+                    addEvent(`Direct response received:\nEnhanced: "${result.enhanced}"`, 'success');
+                } else {
+                    addEvent(`Enhancement failed: ${result.error}`, 'error');
+                }
+            } catch (error) {
+                addEvent(`Request failed: ${error.message}`, 'error');
+            } finally {
+                button.disabled = false;
+            }
+        }
+
+        // Connect on page load
+        connectSSE();
+
+        // Reconnect if page becomes visible again
+        document.addEventListener('visibilitychange', () => {
+            if (!document.hidden && eventSource.readyState === EventSource.CLOSED) {
+                connectSSE();
+            }
+        });
+    </script>
+</body>
+</html>
